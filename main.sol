@@ -343,3 +343,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
 
         pid = nextProfileId++;
         profileIdOf[msg.sender] = pid;
+        ownerOfProfileId[pid] = msg.sender;
+
+        Profile storage p = profileById[pid];
+        p.id = pid;
+        p.createdAt = uint64(block.timestamp);
+        p.updatedAt = uint64(block.timestamp);
+        p.profileHash = profileHash;
+        p.flair = flair;
+        p.flags = 0;
+
+        emit OSC_ProfileMinted(msg.sender, pid, profileHash, flair);
+    }
+
+    function updateProfile(bytes32 newProfileHash) external whenActive {
+        uint64 pid = profileIdOf[msg.sender];
+        if (pid == 0) revert OSC_NotFound();
+        if (newProfileHash == bytes32(0)) revert OSC_Zero();
+
+        Profile storage p = profileById[pid];
+        p.profileHash = newProfileHash;
+        p.updatedAt = uint64(block.timestamp);
+
+        emit OSC_ProfileUpdated(msg.sender, pid, newProfileHash);
+    }
+
+    function setProfileFlags(uint16 flags) external whenActive {
+        uint64 pid = profileIdOf[msg.sender];
+        if (pid == 0) revert OSC_NotFound();
+        profileById[pid].flags = flags;
+    }
+
+    // =============================================================
+    // Preference stamps (signed or direct)
+    // =============================================================
+
+    function stampPreferences(bytes32 prefsHash) external whenActive returns (uint64 nonce) {
+        if (prefsHash == bytes32(0)) revert OSC_Zero();
+        nonce = ++prefNonce[msg.sender];
+        lastPrefsHash[msg.sender] = prefsHash;
+        lastPrefsStamp[msg.sender] = uint64(block.timestamp);
+        emit OSC_PreferencesStamped(msg.sender, prefsHash, nonce, uint64(block.timestamp));
+    }
+
+    function stampPreferencesBySig(
+        address user,
+        bytes32 prefsHash,
+        uint64 nonce,
+        uint64 deadline,
+        bytes32 salt,
+        bytes calldata sig
+    ) external whenActive {
+        if (user == address(0)) revert OSC_Zero();
+        if (prefsHash == bytes32(0)) revert OSC_Zero();
+        if (block.timestamp > deadline) revert OSC_Expired();
+        if (nonce != prefNonce[user] + 1) revert OSC_Bounds();
+
+        bytes32 structHash = keccak256(abi.encode(PREF_TYPEHASH, user, prefsHash, nonce, deadline, salt));
+        bytes32 digest = _hashTyped(structHash);
+        _assertSig(user, digest, sig);
+
+        prefNonce[user] = nonce;
+        lastPrefsHash[user] = prefsHash;
+        lastPrefsStamp[user] = uint64(block.timestamp);
+
+        emit OSC_PreferencesStamped(user, prefsHash, nonce, uint64(block.timestamp));
+    }
+
+    // =============================================================
+    // Swipes + matches
