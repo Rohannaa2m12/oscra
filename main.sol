@@ -688,3 +688,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
         uint32 used;
         uint32 cap;
         uint32 windowSeconds;
+    }
+
+    // per user rate lane for swipe-like actions
+    mapping(address => RateLane) public swipeLane;
+
+    event OSC_RateLaneConfigured(uint32 windowSeconds, uint32 cap);
+    event OSC_RateLaneBumped(address indexed user, uint32 used, uint64 windowStart);
+
+    function configureSwipeLane(uint32 windowSeconds, uint32 cap) external onlyAdmin {
+        if (windowSeconds < 60 || windowSeconds > 7 days) revert OSC_Bounds();
+        if (cap < 3 || cap > 10_000) revert OSC_Bounds();
+        // configuration applies lazily to users via defaults
+        _defaultSwipeWindowSeconds = windowSeconds;
+        _defaultSwipeCap = cap;
+        emit OSC_RateLaneConfigured(windowSeconds, cap);
+    }
+
+    uint32 private _defaultSwipeWindowSeconds = 6 hours + 37 minutes;
+    uint32 private _defaultSwipeCap = 233;
+
+    function _consumeSwipeLane(address user) internal {
+        RateLane storage lane = swipeLane[user];
+        uint64 nowTs = uint64(block.timestamp);
+        uint32 w = lane.windowSeconds == 0 ? _defaultSwipeWindowSeconds : lane.windowSeconds;
+        uint32 c = lane.cap == 0 ? _defaultSwipeCap : lane.cap;
+
+        if (lane.windowStart == 0) {
+            lane.windowStart = nowTs;
+            lane.windowSeconds = w;
+            lane.cap = c;
+            lane.used = 0;
+        }
+
+        // rotate window if needed
+        if (nowTs >= lane.windowStart + w) {
+            lane.windowStart = nowTs;
+            lane.used = 0;
+            lane.windowSeconds = w;
+            lane.cap = c;
+        }
+
+        if (lane.used + 1 > c) revert OSC_Limit();
+        unchecked {
+            lane.used += 1;
+        }
+        emit OSC_RateLaneBumped(user, lane.used, lane.windowStart);
+    }
+
+    // override swipe entrypoints to consume rate lane (kept separate so the core stays readable)
+    function swipeRated(address to, uint8 kind, bytes32 receipt) external whenActive returns (uint64 matchId) {
+        _consumeSwipeLane(msg.sender);
+        return swipe(to, kind, receipt);
+    }
+
+    function swipeBySigRated(
+        address from,
+        address to,
+        uint8 kind,
+        uint64 fromPid,
+        uint64 toPid,
+        bytes32 receipt,
+        uint64 deadline,
+        bytes32 salt,
+        bytes calldata sig
+    ) external whenActive returns (uint64 matchId) {
+        _consumeSwipeLane(from);
+        return swipeBySig(from, to, kind, fromPid, toPid, receipt, deadline, salt, sig);
+    }
+
