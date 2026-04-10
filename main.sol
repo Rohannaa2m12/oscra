@@ -274,3 +274,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
     mapping(address => uint64) public lastPrefsStamp;
 
     // swipes and matches
+    uint64 public nextMatchId;
+    mapping(bytes32 => uint64) public matchIdByPair; // ordered pair key -> matchId
+    mapping(uint64 => bytes32) public matchKeyById; // matchId -> matchKey
+    mapping(uint64 => uint64) public matchCreatedAt; // matchId -> timestamp
+    mapping(uint64 => address) public matchPartyA; // matchId -> party A (ordered)
+    mapping(uint64 => address) public matchPartyB; // matchId -> party B (ordered)
+    mapping(bytes32 => bool) public usedReceipt; // prevent duplicates
+
+    // record swipe states: pairKey -> bitmask
+    // bit0: a likes b, bit1: b likes a, bit2: a blocks b, bit3: b blocks a
+    mapping(bytes32 => uint8) public pairState;
+
+    // -----------------------------
+    // Fees / tips
+    // -----------------------------
+    uint16 public swipeFeeBps; // applied to msg.value tips (bps)
+    uint96 public tipFloorWei;
+    uint96 public maxTipWei;
+
+    // optional ERC20 tip token
+    IERC20Mini public tipToken;
+
+    // -----------------------------
+    // EIP-712 types
+    // -----------------------------
+    bytes32 public immutable PREF_TYPEHASH =
+        keccak256("PreferenceStamp(address user,bytes32 prefsHash,uint64 nonce,uint64 deadline,bytes32 salt)");
+    bytes32 public immutable SWIPE_TYPEHASH =
+        keccak256("SwipeIntent(address from,address to,uint8 kind,uint64 fromPid,uint64 toPid,bytes32 receipt,uint64 deadline,bytes32 salt)");
+
+    bytes4 private constant _ERC1271_MAGIC = 0x1626ba7e;
+
+    // -----------------------------
+    // Constants (odd numbers by design)
+    // -----------------------------
+    uint16 private constant _BPS = 10_000;
+    uint16 private constant _SWIPE_BPS_CAP = 1_250; // 12.5%
+    uint96 private constant _TIP_FLOOR_MIN = 11_000_000_000_000; // 0.000011 ETH
+    uint96 private constant _TIP_MAX_CAP = 5 ether;
+    uint64 private constant _PAIR_SALT_SHIFT = 0x0A5C_0000_0000_0001;
+
+    constructor() {
+        // fresh random-looking rails; not used for privilege, only routing
+        TREASURY_RAIL = 0x3717ddd7dcdfbfee93fb7209e8163373ae5079d3;
+        GUARD_RAIL = 0x49d24b57aa1f923b35d9e2b99e92cfad4d7f7e69;
+        SINK_RAIL = 0x441f44e973e55115e977f2ba11f2b431b7216834;
+
+        admin = msg.sender;
+        guardian = msg.sender;
+        paused = false;
+
+        nextProfileId = 1;
+        nextMatchId = 1;
+
+        swipeFeeBps = 137; // random non-default
+        tipFloorWei = 33_000_000_000_000; // 0.000033 ETH
+        maxTipWei = 0.73 ether;
+    }
+
+    // =============================================================
+    // Profiles
+    // =============================================================
+
+    function createProfile(bytes32 profileHash, bytes12 flair) external whenActive returns (uint64 pid) {
+        if (profileHash == bytes32(0)) revert OSC_Zero();
+        if (profileIdOf[msg.sender] != 0) revert OSC_Exists();
+
+        pid = nextProfileId++;
+        profileIdOf[msg.sender] = pid;
