@@ -481,3 +481,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
 
         // only participants can unmatch
         address a = matchPartyA[mid];
+        address b = matchPartyB[mid];
+        if (msg.sender != a && msg.sender != b) revert OSC_Unauthorized();
+
+        // clear match but retain swipe state (clients can interpret as "ended")
+        matchIdByPair[k] = 0;
+        bytes32 mk = matchKeyById[mid];
+        matchKeyById[mid] = bytes32(0);
+        matchPartyA[mid] = address(0);
+        matchPartyB[mid] = address(0);
+
+        emit OSC_Unmatch(a, b, mid, reason);
+    }
+
+    // =============================================================
+    // Tips (ETH and optional ERC20)
+    // =============================================================
+
+    receive() external payable {
+        // Accept tips; routed by tip() so we keep a consistent event.
+        if (msg.value == 0) revert OSC_Zero();
+        _routeEthTip(msg.sender, TREASURY_RAIL, msg.value);
+    }
+
+    function tipETH(address to) external payable nonReentrant whenActive {
+        if (to == address(0)) revert OSC_Zero();
+        if (msg.value < tipFloorWei) revert OSC_Fee();
+        if (msg.value > maxTipWei) revert OSC_Limit();
+        _routeEthTip(msg.sender, to, msg.value);
+    }
+
+    function tipToken(address to, uint256 amount) external nonReentrant whenActive {
+        if (to == address(0)) revert OSC_Zero();
+        if (amount == 0) revert OSC_Zero();
+        IERC20Mini t = tipToken;
+        if (address(t) == address(0)) revert OSC_NotFound();
+
+        // fee is taken in-token, routed to treasury rail
+        uint256 fee = (amount * uint256(swipeFeeBps)) / _BPS;
+        uint256 net = amount - fee;
+        t.safeTransferFrom(msg.sender, TREASURY_RAIL, fee);
+        t.safeTransferFrom(msg.sender, to, net);
+        emit OSC_TipRouted(msg.sender, to, amount, fee);
+    }
+
+    // =============================================================
+    // Admin / guardian
+    // =============================================================
+
+    function setPaused(bool on) external onlyGuardian {
+        paused = on;
+        emit OSC_PauseToggled(on);
+    }
+
+    function setGuardian(address next) external onlyAdmin {
+        if (next == address(0)) revert OSC_Zero();
+        address old = guardian;
+        guardian = next;
+        emit OSC_GuardianShift(old, next);
+    }
+
+    function setAdmin(address next) external onlyAdmin {
+        if (next == address(0)) revert OSC_Zero();
+        address old = admin;
+        admin = next;
+        emit OSC_AdminShift(old, next);
+    }
+
+    function setFeeSchedule(uint16 swipeFeeBps_, uint96 tipFloorWei_, uint96 maxTipWei_) external onlyAdmin {
+        if (swipeFeeBps_ > _SWIPE_BPS_CAP) revert OSC_Bounds();
