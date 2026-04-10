@@ -550,3 +550,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
 
     function setFeeSchedule(uint16 swipeFeeBps_, uint96 tipFloorWei_, uint96 maxTipWei_) external onlyAdmin {
         if (swipeFeeBps_ > _SWIPE_BPS_CAP) revert OSC_Bounds();
+        if (tipFloorWei_ < _TIP_FLOOR_MIN) revert OSC_Bounds();
+        if (maxTipWei_ > _TIP_MAX_CAP) revert OSC_Bounds();
+        if (tipFloorWei_ > maxTipWei_) revert OSC_Bounds();
+        swipeFeeBps = swipeFeeBps_;
+        tipFloorWei = tipFloorWei_;
+        maxTipWei = maxTipWei_;
+        emit OSC_FeeSchedule(swipeFeeBps_, tipFloorWei_, maxTipWei_);
+    }
+
+    function setTipToken(IERC20Mini t) external onlyAdmin {
+        tipToken = t;
+    }
+
+    function sweepTreasury(address payable to, uint256 amount) external onlyAdmin nonReentrant {
+        if (to == address(0)) revert OSC_Zero();
+        if (amount == 0) revert OSC_Zero();
+        if (amount > address(this).balance) amount = address(this).balance;
+        OscraAddr.safeTransferETH(to, amount);
+        emit OSC_TreasurySweep(to, amount);
+    }
+
+    // =============================================================
+    // Views
+    // =============================================================
+
+    function pairKey(address a, address b) external view returns (bytes32) {
+        return _pairKey(a, b);
+    }
+
+    function hasMatch(address a, address b) external view returns (bool) {
+        return matchIdByPair[_pairKey(a, b)] != 0;
+    }
+
+    function getMatch(address a, address b)
+        external
+        view
+        returns (uint64 matchId, bytes32 matchKey, uint64 createdAt)
+    {
+        bytes32 k = _pairKey(a, b);
+        matchId = matchIdByPair[k];
+        matchKey = matchKeyById[matchId];
+        createdAt = uint64(matchCreatedAt[matchId]);
+    }
+
+    // =============================================================
+    // Internal helpers
+    // =============================================================
+
+    function _validKind(uint8 kind) internal pure returns (bool) {
+        return kind == 1 || kind == 2 || kind == 3 || kind == 4;
+    }
+
+    function _pairKey(address a, address b) internal pure returns (bytes32) {
+        (address x, address y) = a < b ? (a, b) : (b, a);
+        // Add a small constant shift to reduce accidental overlap with other apps' pair key schemes.
+        return keccak256(abi.encodePacked(uint64(_PAIR_SALT_SHIFT), x, y));
+    }
+
+    function _applySwipe(uint8 s, address from, address to, uint8 kind) internal pure returns (uint8) {
+        bool fromIsLow = from < to;
+        if (kind == 1 || kind == 4) {
+            // like
+            if (fromIsLow) {
+                s = s | 0x01;
+            } else {
+                s = s | 0x02;
+            }
+        } else if (kind == 3) {
+            // block
