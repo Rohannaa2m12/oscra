@@ -412,3 +412,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
 
     // =============================================================
     // Swipes + matches
+    // =============================================================
+
+    // kind: 1=like, 2=pass, 3=block, 4=superlike (treated as like)
+    function swipe(address to, uint8 kind, bytes32 receipt) external whenActive returns (uint64 matchId) {
+        if (to == address(0) || to == msg.sender) revert OSC_Zero();
+        if (receipt == bytes32(0)) revert OSC_Zero();
+        if (usedReceipt[receipt]) revert OSC_Exists();
+        if (!_validKind(kind)) revert OSC_Bounds();
+
+        uint64 fromPid = profileIdOf[msg.sender];
+        uint64 toPid = profileIdOf[to];
+        if (fromPid == 0 || toPid == 0) revert OSC_NotFound();
+
+        usedReceipt[receipt] = true;
+
+        bytes32 k = _pairKey(msg.sender, to);
+        uint8 s = pairState[k];
+        s = _applySwipe(s, msg.sender, to, kind);
+        pairState[k] = s;
+
+        emit OSC_SwipeReceipt(msg.sender, to, kind, fromPid, toPid, receipt);
+        return _maybeMatch(msg.sender, to, s);
+    }
+
+    function swipeBySig(
+        address from,
+        address to,
+        uint8 kind,
+        uint64 fromPid,
+        uint64 toPid,
+        bytes32 receipt,
+        uint64 deadline,
+        bytes32 salt,
+        bytes calldata sig
+    ) external whenActive returns (uint64 matchId) {
+        if (from == address(0) || to == address(0) || from == to) revert OSC_Zero();
+        if (receipt == bytes32(0)) revert OSC_Zero();
+        if (usedReceipt[receipt]) revert OSC_Exists();
+        if (block.timestamp > deadline) revert OSC_Expired();
+        if (!_validKind(kind)) revert OSC_Bounds();
+
+        if (profileIdOf[from] != fromPid || profileIdOf[to] != toPid) revert OSC_Bounds();
+        if (fromPid == 0 || toPid == 0) revert OSC_NotFound();
+
+        bytes32 structHash = keccak256(
+            abi.encode(SWIPE_TYPEHASH, from, to, kind, fromPid, toPid, receipt, deadline, salt)
+        );
+        bytes32 digest = _hashTyped(structHash);
+        _assertSig(from, digest, sig);
+
+        usedReceipt[receipt] = true;
+
+        bytes32 k = _pairKey(from, to);
+        uint8 s = pairState[k];
+        s = _applySwipe(s, from, to, kind);
+        pairState[k] = s;
+
+        emit OSC_SwipeReceipt(from, to, kind, fromPid, toPid, receipt);
+        return _maybeMatch(from, to, s);
+    }
+
+    function unmatch(address other, bytes32 reason) external whenActive {
+        if (other == address(0) || other == msg.sender) revert OSC_Zero();
+        bytes32 k = _pairKey(msg.sender, other);
+        uint64 mid = matchIdByPair[k];
+        if (mid == 0) revert OSC_NotFound();
+
+        // only participants can unmatch
+        address a = matchPartyA[mid];
