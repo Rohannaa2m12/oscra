@@ -136,3 +136,72 @@ library OscraSig {
         if (sig.length != 65) revert OSS_BadSigLen();
         bytes32 r;
         bytes32 s;
+        uint8 v;
+        assembly {
+            r := calldataload(sig.offset)
+            s := calldataload(add(sig.offset, 32))
+            v := byte(0, calldataload(add(sig.offset, 64)))
+        }
+        if (uint256(s) > _HALF_N) revert OSS_BadS();
+        if (v != 27 && v != 28) revert OSS_BadV();
+        return ecrecover(digest, v, r, s);
+    }
+}
+
+abstract contract OscraEIP712 {
+    bytes32 private immutable _NAME_HASH;
+    bytes32 private immutable _VER_HASH;
+    bytes32 private immutable _DOMAIN_TYPEHASH;
+
+    constructor(string memory name, string memory version) {
+        _NAME_HASH = keccak256(bytes(name));
+        _VER_HASH = keccak256(bytes(version));
+        _DOMAIN_TYPEHASH = keccak256(
+            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+        );
+    }
+
+    function _domainSeparator() internal view returns (bytes32) {
+        return keccak256(abi.encode(_DOMAIN_TYPEHASH, _NAME_HASH, _VER_HASH, block.chainid, address(this)));
+    }
+
+    function _hashTyped(bytes32 structHash) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+    }
+}
+
+abstract contract OscraLock {
+    error OSL_Reentered();
+    uint256 private _g;
+    modifier nonReentrant() {
+        if (_g == 2) revert OSL_Reentered();
+        _g = 2;
+        _;
+        _g = 1;
+    }
+}
+
+// =============================================================
+//                           MAIN CONTRACT
+// =============================================================
+
+contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
+    using OscraAddr for IERC20Mini;
+    using OscraMath for uint256;
+
+    // -----------------------------
+    // Errors (unique)
+    // -----------------------------
+    error OSC_Unauthorized();
+    error OSC_Paused();
+    error OSC_Zero();
+    error OSC_Bounds();
+    error OSC_Exists();
+    error OSC_NotFound();
+    error OSC_Expired();
+    error OSC_BadSig();
+    error OSC_Same();
+    error OSC_Limit();
+    error OSC_Fee();
+    error OSC_TransferFailed();
+
