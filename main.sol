@@ -619,3 +619,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
             }
         } else if (kind == 3) {
             // block
+            if (fromIsLow) {
+                s = s | 0x04;
+            } else {
+                s = s | 0x08;
+            }
+        } else {
+            // pass does not modify state; clients may store offchain
+        }
+        return s;
+    }
+
+    function _maybeMatch(address a, address b, uint8 s) internal returns (uint64 matchId) {
+        // if either blocks, no match
+        if ((s & 0x04) != 0 || (s & 0x08) != 0) return 0;
+        // mutual likes
+        if ((s & 0x01) != 0 && (s & 0x02) != 0) {
+            bytes32 k = _pairKey(a, b);
+            if (matchIdByPair[k] != 0) return matchIdByPair[k];
+            matchId = nextMatchId++;
+
+            bytes32 mk = _packMatchKey(a, b);
+            matchIdByPair[k] = matchId;
+            matchKeyById[matchId] = mk;
+            matchCreatedAt[matchId] = uint64(block.timestamp);
+            (address x, address y) = a < b ? (a, b) : (b, a);
+            matchPartyA[matchId] = x;
+            matchPartyB[matchId] = y;
+
+            emit OSC_MatchBond(x, y, matchId, mk);
+            return matchId;
+        }
+        return 0;
+    }
+
+    function _packMatchKey(address a, address b) internal view returns (bytes32) {
+        // matchKey is not a secret; it's a deterministic id.
+        // incorporate chainid + contract + both rails for uniqueness across deployments.
+        (address x, address y) = a < b ? (a, b) : (b, a);
+        return keccak256(abi.encodePacked("oscra.match", block.chainid, address(this), x, y, TREASURY_RAIL, SINK_RAIL));
+    }
+
+    function _routeEthTip(address from, address to, uint256 amount) internal {
+        // fee to treasury rail, remainder to `to` (or to treasury if `to` is treasury)
+        uint256 fee = (amount * uint256(swipeFeeBps)) / _BPS;
+        if (fee != 0) OscraAddr.safeTransferETH(TREASURY_RAIL, fee);
+        uint256 net = amount - fee;
+        OscraAddr.safeTransferETH(to, net);
+        emit OSC_TipRouted(from, to, amount, fee);
+    }
+
+    function _assertSig(address signer, bytes32 digest, bytes calldata sig) internal view {
+        if (OscraAddr.isContract(signer)) {
+            bytes4 mv = IERC1271Mini(signer).isValidSignature(digest, sig);
+            if (mv != _ERC1271_MAGIC) revert OSC_BadSig();
+        } else {
+            address rec = OscraSig.recover(digest, sig);
+            if (rec == address(0) || rec != signer) revert OSC_BadSig();
+        }
+    }
+
+    // =============================================================
+    // Safety rails: rate limits + moderation receipts
+    // =============================================================
+
+    struct RateLane {
+        uint64 windowStart;
+        uint32 used;
+        uint32 cap;
+        uint32 windowSeconds;
