@@ -757,3 +757,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
         return swipeBySig(from, to, kind, fromPid, toPid, receipt, deadline, salt, sig);
     }
 
+    // -----------------------------
+    // Moderation receipts (hash-only)
+    // -----------------------------
+
+    // reportKey = keccak256("oscra.report", chainid, contract, reporter, accused, matchId, evidenceHash)
+    mapping(bytes32 => bool) public usedReportKey;
+    mapping(address => uint32) public reportCountByAccused;
+
+    event OSC_ReportFiled(
+        address indexed reporter,
+        address indexed accused,
+        uint64 indexed matchId,
+        bytes32 evidenceHash,
+        bytes32 reportKey,
+        uint64 stampedAt
+    );
+    event OSC_UserMuted(address indexed user, bool muted, uint64 untilTs, bytes32 noteHash);
+
+    // simple mute list controlled by guardian; clients should treat as "hard no"
+    mapping(address => uint64) public mutedUntil;
+
+    function fileReport(address accused, uint64 matchId, bytes32 evidenceHash) external whenActive {
+        if (accused == address(0) || accused == msg.sender) revert OSC_Zero();
+        if (evidenceHash == bytes32(0)) revert OSC_Zero();
+
+        // matchId can be 0 (out-of-band report), but if non-zero it must exist
+        if (matchId != 0 && matchKeyById[matchId] == bytes32(0)) revert OSC_NotFound();
+
+        bytes32 key = keccak256(
+            abi.encodePacked("oscra.report", block.chainid, address(this), msg.sender, accused, matchId, evidenceHash)
+        );
+        if (usedReportKey[key]) revert OSC_Exists();
+        usedReportKey[key] = true;
+
+        unchecked {
+            reportCountByAccused[accused] += 1;
+        }
+
+        emit OSC_ReportFiled(msg.sender, accused, matchId, evidenceHash, key, uint64(block.timestamp));
+    }
+
+    function setMuted(address user, bool muted, uint64 durationSeconds, bytes32 noteHash) external onlyGuardian {
+        if (user == address(0)) revert OSC_Zero();
+        if (durationSeconds > 365 days) revert OSC_Bounds();
+        if (muted) {
+            mutedUntil[user] = uint64(block.timestamp) + durationSeconds;
+        } else {
+            mutedUntil[user] = 0;
+        }
+        emit OSC_UserMuted(user, muted, mutedUntil[user], noteHash);
+    }
+
+    function isMuted(address user) external view returns (bool) {
+        uint64 untilTs = uint64(mutedUntil[user]);
+        return untilTs != 0 && uint64(block.timestamp) < untilTs;
+    }
+
+    // =============================================================
+    // Match metadata: hash-bound notes for clients
+    // =============================================================
+
+    struct MatchMeta {
+        bytes32 topicHash;
+        bytes32 pinnedHash;
+        uint64 updatedAt;
+        uint16 metaFlags;
+    }
+
+    mapping(uint64 => MatchMeta) public matchMeta;
