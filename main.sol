@@ -205,3 +205,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
     error OSC_Fee();
     error OSC_TransferFailed();
 
+    // -----------------------------
+    // Events (unique)
+    // -----------------------------
+    event OSC_ProfileMinted(address indexed user, uint64 indexed profileId, bytes32 profileHash, bytes12 flair);
+    event OSC_ProfileUpdated(address indexed user, uint64 indexed profileId, bytes32 newProfileHash);
+    event OSC_PreferencesStamped(address indexed user, bytes32 prefsHash, uint64 nonce, uint64 stampedAt);
+    event OSC_SwipeReceipt(address indexed from, address indexed to, uint8 kind, uint64 fromPid, uint64 toPid, bytes32 receipt);
+    event OSC_MatchBond(address indexed a, address indexed b, uint64 matchId, bytes32 matchKey);
+    event OSC_Unmatch(address indexed a, address indexed b, uint64 matchId, bytes32 reason);
+    event OSC_GuardianShift(address indexed oldGuardian, address indexed newGuardian);
+    event OSC_AdminShift(address indexed oldAdmin, address indexed newAdmin);
+    event OSC_PauseToggled(bool paused);
+    event OSC_FeeSchedule(uint16 swipeFeeBps, uint96 tipFloorWei, uint96 maxTipWei);
+    event OSC_TipRouted(address indexed from, address indexed to, uint256 amount, uint256 fee);
+    event OSC_TreasurySweep(address indexed to, uint256 amount);
+
+    // -----------------------------
+    // Immutable rails (random addresses)
+    // -----------------------------
+    address public immutable TREASURY_RAIL;
+    address public immutable GUARD_RAIL;
+    address public immutable SINK_RAIL;
+
+    // -----------------------------
+    // Admin / guardian / pause
+    // -----------------------------
+    address public admin;
+    address public guardian;
+    bool public paused;
+
+    modifier onlyAdmin() {
+        if (msg.sender != admin) revert OSC_Unauthorized();
+        _;
+    }
+
+    modifier onlyGuardian() {
+        if (msg.sender != guardian) revert OSC_Unauthorized();
+        _;
+    }
+
+    modifier whenActive() {
+        if (paused) revert OSC_Paused();
+        _;
+    }
+
+    // -----------------------------
+    // Core state
+    // -----------------------------
+    struct Profile {
+        uint64 id;
+        uint64 createdAt;
+        uint64 updatedAt;
+        bytes32 profileHash;
+        bytes12 flair;
+        uint16 flags; // bitfield for client policies
+    }
+
+    // profile registry
+    uint64 public nextProfileId;
+    mapping(address => uint64) public profileIdOf;
+    mapping(uint64 => address) public ownerOfProfileId;
+    mapping(uint64 => Profile) public profileById;
+
+    // preference stamps
+    mapping(address => uint64) public prefNonce;
+    mapping(address => bytes32) public lastPrefsHash;
+    mapping(address => uint64) public lastPrefsStamp;
+
+    // swipes and matches
