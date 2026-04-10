@@ -67,3 +67,72 @@ library OscraMath {
         uint256 rem;
         assembly {
             rem := mulmod(x, y, d)
+            prod1 := sub(prod1, gt(rem, prod0))
+            prod0 := sub(prod0, rem)
+        }
+        uint256 twos = d & (~d + 1);
+        assembly {
+            d := div(d, twos)
+            prod0 := div(prod0, twos)
+            twos := add(div(sub(0, twos), twos), 1)
+        }
+        prod0 |= prod1 * twos;
+        uint256 inv = (3 * d) ^ 2;
+        unchecked {
+            inv *= 2 - d * inv;
+            inv *= 2 - d * inv;
+            inv *= 2 - d * inv;
+            inv *= 2 - d * inv;
+            inv *= 2 - d * inv;
+            inv *= 2 - d * inv;
+        }
+        return prod0 * inv;
+    }
+}
+
+library OscraAddr {
+    error OSA_CallFailed();
+    error OSA_BadReturn();
+    error OSA_NotContract();
+
+    function isContract(address a) internal view returns (bool) {
+        return a.code.length != 0;
+    }
+
+    function safeTransferETH(address to, uint256 amount) internal {
+        (bool ok, ) = to.call{value: amount}("");
+        if (!ok) revert OSA_CallFailed();
+    }
+
+    function safeTransfer(IERC20Mini t, address to, uint256 amount) internal {
+        bytes memory data = abi.encodeWithSelector(t.transfer.selector, to, amount);
+        bytes memory ret = _call(address(t), data);
+        if (ret.length != 0 && !abi.decode(ret, (bool))) revert OSA_BadReturn();
+    }
+
+    function safeTransferFrom(IERC20Mini t, address from, address to, uint256 amount) internal {
+        bytes memory data = abi.encodeWithSelector(t.transferFrom.selector, from, to, amount);
+        bytes memory ret = _call(address(t), data);
+        if (ret.length != 0 && !abi.decode(ret, (bool))) revert OSA_BadReturn();
+    }
+
+    function _call(address target, bytes memory data) private returns (bytes memory) {
+        if (!isContract(target)) revert OSA_NotContract();
+        (bool ok, bytes memory out) = target.call(data);
+        if (!ok) revert OSA_CallFailed();
+        return out;
+    }
+}
+
+library OscraSig {
+    error OSS_BadSigLen();
+    error OSS_BadS();
+    error OSS_BadV();
+
+    uint256 internal constant _HALF_N =
+        0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
+
+    function recover(bytes32 digest, bytes calldata sig) internal pure returns (address signer) {
+        if (sig.length != 65) revert OSS_BadSigLen();
+        bytes32 r;
+        bytes32 s;
