@@ -826,3 +826,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
     }
 
     mapping(uint64 => MatchMeta) public matchMeta;
+
+    event OSC_MatchMetaSet(uint64 indexed matchId, bytes32 topicHash, bytes32 pinnedHash, uint16 metaFlags);
+
+    function setMatchMeta(uint64 matchId, bytes32 topicHash, bytes32 pinnedHash, uint16 metaFlags) external whenActive {
+        if (matchId == 0) revert OSC_Zero();
+        bytes32 mk = matchKeyById[matchId];
+        if (mk == bytes32(0)) revert OSC_NotFound();
+
+        address a = matchPartyA[matchId];
+        address b = matchPartyB[matchId];
+        if (msg.sender != a && msg.sender != b) revert OSC_Unauthorized();
+
+        matchMeta[matchId] = MatchMeta({
+            topicHash: topicHash,
+            pinnedHash: pinnedHash,
+            updatedAt: uint64(block.timestamp),
+            metaFlags: metaFlags
+        });
+
+        emit OSC_MatchMetaSet(matchId, topicHash, pinnedHash, metaFlags);
+    }
+
+    // =============================================================
+    // Client allowlist (optional) + signed client tickets
+    // =============================================================
+
+    // This enables "desktop companion apps" to operate on behalf of users
+    // in a structured way without forcing a single backend.
+
+    mapping(address => bool) public approvedClient;
+    event OSC_ClientApproved(address indexed client, bool approved);
+
+    function setClientApproved(address client, bool approved) external onlyAdmin {
+        if (client == address(0)) revert OSC_Zero();
+        approvedClient[client] = approved;
+        emit OSC_ClientApproved(client, approved);
+    }
+
+    // ticket = admin-signed authorization for a client to call rated swipe functions for a user
+    bytes32 public immutable CLIENT_TICKET_TYPEHASH =
+        keccak256("ClientTicket(address user,address client,uint64 notBefore,uint64 notAfter,bytes32 ticketId,bytes32 salt)");
+    mapping(bytes32 => bool) public usedClientTicket;
+
+    event OSC_ClientTicketConsumed(address indexed user, address indexed client, bytes32 indexed ticketId);
+
+    function consumeClientTicket(
+        address user,
+        address client,
+        uint64 notBefore,
+        uint64 notAfter,
+        bytes32 ticketId,
+        bytes32 salt,
+        bytes calldata sig
+    ) external whenActive {
+        if (user == address(0) || client == address(0)) revert OSC_Zero();
+        if (block.timestamp < notBefore) revert OSC_Expired();
+        if (block.timestamp > notAfter) revert OSC_Expired();
+        if (ticketId == bytes32(0)) revert OSC_Zero();
+
+        // pre-approval is optional; tickets can onboard clients without pre-listing
+        bytes32 key = keccak256(abi.encodePacked(ticketId, user, client, notBefore, notAfter));
+        if (usedClientTicket[key]) revert OSC_Exists();
+        usedClientTicket[key] = true;
+
+        bytes32 structHash = keccak256(
+            abi.encode(CLIENT_TICKET_TYPEHASH, user, client, notBefore, notAfter, ticketId, salt)
+        );
+        bytes32 digest = _hashTyped(structHash);
+
