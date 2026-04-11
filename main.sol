@@ -895,3 +895,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
         );
         bytes32 digest = _hashTyped(structHash);
 
+        // admin signs the ticket
+        _assertSig(admin, digest, sig);
+
+        approvedClient[client] = true;
+        emit OSC_ClientTicketConsumed(user, client, ticketId);
+        emit OSC_ClientApproved(client, true);
+    }
+
+    modifier onlyApprovedClient() {
+        if (!approvedClient[msg.sender]) revert OSC_Unauthorized();
+        _;
+    }
+
+    function swipeClientBySigRated(
+        address from,
+        address to,
+        uint8 kind,
+        uint64 fromPid,
+        uint64 toPid,
+        bytes32 receipt,
+        uint64 deadline,
+        bytes32 salt,
+        bytes calldata sig
+    ) external whenActive onlyApprovedClient returns (uint64 matchId) {
+        _consumeSwipeLane(from);
+        return swipeBySig(from, to, kind, fromPid, toPid, receipt, deadline, salt, sig);
+    }
+
+    // =============================================================
+    // Convenience views (desktop + bot friendly)
+    // =============================================================
+
+    struct UserSnapshot {
+        uint64 profileId;
+        bytes32 profileHash;
+        bytes12 flair;
+        uint16 flags;
+        bytes32 prefsHash;
+        uint64 prefsNonce;
+        uint64 prefsStamp;
+        uint64 mutedUntilTs;
+        uint64 swipeWindowStart;
+        uint32 swipeUsed;
+        uint32 swipeCap;
+        uint32 swipeWindowSeconds;
+    }
+
+    function userSnapshot(address user) external view returns (UserSnapshot memory s) {
+        uint64 pid = profileIdOf[user];
+        Profile memory p = pid == 0 ? Profile(0, 0, 0, bytes32(0), bytes12(0), 0) : profileById[pid];
+        RateLane memory lane = swipeLane[user];
+        uint32 w = lane.windowSeconds == 0 ? _defaultSwipeWindowSeconds : lane.windowSeconds;
+        uint32 c = lane.cap == 0 ? _defaultSwipeCap : lane.cap;
+        uint64 start = lane.windowStart;
+        uint32 used = lane.used;
+        if (start != 0 && uint64(block.timestamp) >= start + w) {
+            // rotated view (lazy); does not mutate state
+            start = uint64(block.timestamp);
+            used = 0;
+        }
+        return
+            UserSnapshot({
+                profileId: pid,
+                profileHash: p.profileHash,
+                flair: p.flair,
+                flags: p.flags,
+                prefsHash: lastPrefsHash[user],
+                prefsNonce: prefNonce[user],
+                prefsStamp: lastPrefsStamp[user],
