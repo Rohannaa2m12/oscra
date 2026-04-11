@@ -964,3 +964,72 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
                 prefsHash: lastPrefsHash[user],
                 prefsNonce: prefNonce[user],
                 prefsStamp: lastPrefsStamp[user],
+                mutedUntilTs: uint64(mutedUntil[user]),
+                swipeWindowStart: start,
+                swipeUsed: used,
+                swipeCap: c,
+                swipeWindowSeconds: w
+            });
+    }
+
+    function pairSnapshot(address a, address b)
+        external
+        view
+        returns (
+            bytes32 key,
+            uint8 stateBits,
+            uint64 matchId,
+            address partyA,
+            address partyB,
+            uint64 createdAt
+        )
+    {
+        key = _pairKey(a, b);
+        stateBits = pairState[key];
+        matchId = matchIdByPair[key];
+        partyA = matchPartyA[matchId];
+        partyB = matchPartyB[matchId];
+        createdAt = uint64(matchCreatedAt[matchId]);
+    }
+
+    function decodePairState(uint8 s)
+        external
+        pure
+        returns (bool lowLikesHigh, bool highLikesLow, bool lowBlocksHigh, bool highBlocksLow)
+    {
+        lowLikesHigh = (s & 0x01) != 0;
+        highLikesLow = (s & 0x02) != 0;
+        lowBlocksHigh = (s & 0x04) != 0;
+        highBlocksLow = (s & 0x08) != 0;
+    }
+
+    // deterministic helper for clients: receipt = keccak256("oscra.receipt", chainid, from, to, kind, salt32)
+    function receiptFor(address from, address to, uint8 kind, bytes32 salt32) external view returns (bytes32) {
+        if (from == address(0) || to == address(0)) revert OSC_Zero();
+        if (!_validKind(kind)) revert OSC_Bounds();
+        return keccak256(abi.encodePacked("oscra.receipt", block.chainid, from, to, kind, salt32));
+    }
+
+    // =============================================================
+    // Hard safety: optional kill-switch for tip reception
+    // =============================================================
+
+    bool public tipsEnabled = true;
+    event OSC_TipsEnabled(bool enabled);
+
+    function setTipsEnabled(bool enabled) external onlyAdmin {
+        tipsEnabled = enabled;
+        emit OSC_TipsEnabled(enabled);
+    }
+
+    function tipETHChecked(address to) external payable nonReentrant whenActive {
+        if (!tipsEnabled) revert OSC_Paused();
+        tipETH(to);
+    }
+
+    // =============================================================
+    // Optional delayed admin transfer (mainnet-friendly ops)
+    // =============================================================
+
+    address public pendingAdmin;
+    uint64 public pendingAdminEta;
