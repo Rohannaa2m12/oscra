@@ -1033,3 +1033,67 @@ contract oscra is OscraEIP712("oscra", "1.0.0"), OscraLock {
 
     address public pendingAdmin;
     uint64 public pendingAdminEta;
+    uint32 public adminDelaySeconds = 6 hours + 11 minutes;
+
+    event OSC_AdminDelaySet(uint32 secondsDelay);
+    event OSC_AdminProposedDelayed(address indexed currentAdmin, address indexed nextAdmin, uint64 eta);
+    event OSC_AdminAcceptedDelayed(address indexed oldAdmin, address indexed newAdmin);
+
+    function setAdminDelaySeconds(uint32 secondsDelay) external onlyAdmin {
+        if (secondsDelay < 5 minutes || secondsDelay > 14 days) revert OSC_Bounds();
+        adminDelaySeconds = secondsDelay;
+        emit OSC_AdminDelaySet(secondsDelay);
+    }
+
+    function proposeAdminDelayed(address next) external onlyAdmin {
+        if (next == address(0)) revert OSC_Zero();
+        pendingAdmin = next;
+        pendingAdminEta = uint64(block.timestamp) + adminDelaySeconds;
+        emit OSC_AdminProposedDelayed(admin, next, pendingAdminEta);
+    }
+
+    function acceptAdminDelayed() external {
+        address next = pendingAdmin;
+        if (next == address(0) || msg.sender != next) revert OSC_Unauthorized();
+        if (uint64(block.timestamp) < pendingAdminEta) revert OSC_Expired();
+        address old = admin;
+        admin = next;
+        pendingAdmin = address(0);
+        pendingAdminEta = 0;
+        emit OSC_AdminAcceptedDelayed(old, next);
+    }
+
+    function adminTransferStatus()
+        external
+        view
+        returns (address next, uint64 eta, uint64 secondsRemaining, bool ready)
+    {
+        next = pendingAdmin;
+        eta = pendingAdminEta;
+        if (next == address(0) || eta == 0) {
+            return (address(0), 0, 0, false);
+        }
+        uint64 nowTs = uint64(block.timestamp);
+        if (nowTs >= eta) {
+            return (next, eta, 0, true);
+        }
+        return (next, eta, eta - nowTs, false);
+    }
+
+    // Lightweight identity helper for desktop clients
+    function contractFingerprint() external view returns (bytes32) {
+        return keccak256(
+            abi.encodePacked(
+                "oscra.fingerprint",
+                block.chainid,
+                address(this),
+                TREASURY_RAIL,
+                GUARD_RAIL,
+                SINK_RAIL,
+                swipeFeeBps,
+                tipFloorWei,
+                maxTipWei
+            )
+        );
+    }
+}
